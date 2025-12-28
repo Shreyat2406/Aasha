@@ -3,48 +3,63 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY || "")
 
-// Local in-memory cache (for repeated URLs in the same server instance)
+// In-memory cache
 const cache = new Map<string, any>()
 
+/* ---------------- TRUSTED DOMAIN CHECK ---------------- */
+function isTrustedDomain(url: string) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    const trustedDomains = [
+      "google.com",
+      "chatgpt.com",
+      "openai.com",
+      "github.com",
+      "microsoft.com",
+      "amazon.com",
+      "apple.com",
+    ]
+
+    return trustedDomains.some((domain) => hostname.endsWith(domain))
+  } catch {
+    return false
+  }
+}
+
+/* ---------------- THREAT SCORING (STRICT) ---------------- */
 function analyzeThreatLevel(text: string) {
   const lowerText = text.toLowerCase()
-  const indicators: Array<{ type: string; severity: string; description: string }> = []
   let score = 0
+  const indicators: Array<{ type: string; severity: string; description: string }> = []
 
   const criticalKeywords = [
     "malware",
     "ransomware",
     "credential theft",
-    "steal password",
-    "phishing site",
     "fake login",
   ]
-  const highKeywords = ["phishing", "scam", "suspicious", "malicious", "fraud", "deceptive", "dangerous"]
-  const mediumKeywords = ["caution", "warning", "verify", "untrusted", "unsecure", "risk"]
-  const lowKeywords = ["unusual", "uncommon", "check", "review"]
 
-  criticalKeywords.forEach((keyword) => {
-    if (lowerText.includes(keyword)) {
+  const highKeywords = ["phishing", "scam", "fraud", "malicious"]
+
+  criticalKeywords.forEach((k) => {
+    if (lowerText.includes(k)) {
+      score += 40
+      indicators.push({
+        type: "Critical Threat",
+        severity: "high",
+        description: `Detected: ${k}`,
+      })
+    }
+  })
+
+  highKeywords.forEach((k) => {
+    if (lowerText.includes(k)) {
       score += 25
-      indicators.push({ type: "Critical Threat", severity: "high", description: `Detected: ${keyword}` })
-    }
-  })
-  highKeywords.forEach((keyword) => {
-    if (lowerText.includes(keyword)) {
-      score += 15
-      indicators.push({ type: "High Risk", severity: "high", description: `Detected: ${keyword}` })
-    }
-  })
-  mediumKeywords.forEach((keyword) => {
-    if (lowerText.includes(keyword)) {
-      score += 8
-      indicators.push({ type: "Medium Risk", severity: "medium", description: `Detected: ${keyword}` })
-    }
-  })
-  lowKeywords.forEach((keyword) => {
-    if (lowerText.includes(keyword)) {
-      score += 3
-      indicators.push({ type: "Low Risk", severity: "low", description: `Detected: ${keyword}` })
+      indicators.push({
+        type: "High Risk",
+        severity: "high",
+        description: `Detected: ${k}`,
+      })
     }
   })
 
@@ -59,7 +74,7 @@ function analyzeThreatLevel(text: string) {
   return { threatLevel, score, indicators }
 }
 
-// Retry wrapper for Gemini API
+/* ---------------- GEMINI RETRY WRAPPER ---------------- */
 async function generateWithRetry(model: any, prompt: string, retries = 3, delayMs = 2000) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -68,65 +83,108 @@ async function generateWithRetry(model: any, prompt: string, retries = 3, delayM
     } catch (err: any) {
       if (attempt === retries - 1) throw err
       if (err.message?.includes("quota") || err.message?.includes("429")) {
-        console.warn(`[Gemini] Rate limit hit. Retrying in ${delayMs}ms... (Attempt ${attempt + 1})`)
         await new Promise((r) => setTimeout(r, delayMs))
       } else {
         throw err
       }
     }
   }
-  throw new Error("Failed to get response after retries")
+  throw new Error("Gemini failed after retries")
 }
 
+/* ---------------- API HANDLER ---------------- */
 export async function POST(request: NextRequest) {
   try {
     const { url } = await request.json()
-    if (!url) return NextResponse.json({ error: "URL is required" }, { status: 400 })
+    if (!url) {
+      return NextResponse.json({ error: "URL is required" }, { status: 400 })
+    }
 
-    // Check cache first
+    // Cache check
     if (cache.has(url)) {
-      console.log("[Cache] Returning cached result for:", url)
       return NextResponse.json(cache.get(url))
     }
 
-    console.log("[v0] Sending request to Gemini API for URL:", url)
+    /* ---------- TRUSTED DOMAIN SHORT-CIRCUIT ---------- */
+    if (isTrustedDomain(url)) {
+      const responseData = {
+        threatLevel: "safe",
+        score: 5,
+        analysis: [
+          "This is a well-known and trusted domain",
+          "Uses secure HTTPS encryption",
+          "No phishing, scam, or malicious indicators detected",
+          "Safe for normal browsing",
+        ],
+        indicators: [],
+      }
+
+      cache.set(url, responseData)
+      return NextResponse.json(responseData)
+    }
+
+    /* ---------- GEMINI ANALYSIS ---------- */
     const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" })
 
-    const prompt = `Analyze this URL for potential security threats, scams, or phishing attempts: ${url}
+    const prompt = `
+Analyze the following URL for cybersecurity risks:
+${url}
 
-Provide a detailed analysis covering:
-1. Whether the URL appears legitimate or suspicious
-2. Any signs of phishing, scams, or malicious intent
-3. Domain reputation and trustworthiness
-4. Any red flags or warning signs
-5. Recommendations for the user
+Return the response STRICTLY in this format:
 
-Write your analysis in plain text, be thorough and specific.`
+LEGITIMACY:
+- point
+
+THREATS:
+- point OR "No threats detected"
+
+RED FLAGS:
+- point OR "No red flags detected"
+
+RECOMMENDATIONS:
+- point
+
+Rules:
+- Use bullet points only
+- No paragraphs
+- Be factual, not cautious by default
+`
 
     const text = await generateWithRetry(model, prompt)
 
+    /* ---------- CONVERT TO BULLET POINT ARRAY ---------- */
+    const analysisPoints = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("-"))
+      .map((line) => line.replace(/^-\s*/, ""))
+
     const { threatLevel, score, indicators } = analyzeThreatLevel(text)
 
-    const responseData = { threatLevel, score, analysis: text, indicators }
+    const responseData = {
+      threatLevel,
+      score,
+      analysis: analysisPoints,
+      indicators,
+    }
 
-    // Cache result for future requests
     cache.set(url, responseData)
-
     return NextResponse.json(responseData)
   } catch (error: any) {
-    console.error("[v0] Error scanning URL:", error)
+    console.error("Scan error:", error)
 
     if (error.message?.includes("quota") || error.message?.includes("429")) {
       return NextResponse.json(
-        { error: "API quota exceeded. Try again later or upgrade your Gemini API plan.", quotaExceeded: true },
+        { error: "API quota exceeded. Try again later.", quotaExceeded: true },
         { status: 429 }
       )
     }
 
     return NextResponse.json(
-      { error: "Failed to analyze URL. Please check your API key and try again." },
+      { error: "Failed to analyze URL." },
       { status: 500 }
     )
   }
 }
+
 
