@@ -13,6 +13,7 @@ export interface User {
     chatConversations: number
     correctAnswers: number
     totalQuestions: number
+    quizAccuracy?: number;
   }
   completedModules?: string[] // IDs of completed learning modules
   createdAt: Date

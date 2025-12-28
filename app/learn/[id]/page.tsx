@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, use } from "react"
+import { useState, useEffect, use } from "react"
 import { Navigation } from "@/components/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -29,10 +29,11 @@ export default function LearnModulePage({ params }: { params: Promise<{ id: stri
   const [showExplanation, setShowExplanation] = useState(false)
   const [quizCompleted, setQuizCompleted] = useState(false)
 
-  if (!user) {
-    router.push("/auth")
-    return null
-  }
+  useEffect(() => {
+    if (!user) router.push("/auth");
+  }, [user, router]);
+  
+  if (!user) return null;
 
   if (!module) {
     return (
@@ -98,6 +99,7 @@ export default function LearnModulePage({ params }: { params: Promise<{ id: stri
     const score = Math.round((correctCount / module.quiz!.length) * 100)
 
     await updateUserPoints(module.points)
+    // @ts-ignore
     await updateUserStats({
       modulesCompleted: (user.stats?.modulesCompleted || 0) + 1,
       quizAccuracy: score,

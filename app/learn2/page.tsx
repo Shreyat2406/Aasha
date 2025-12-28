@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState,useEffect } from "react"
 import { Navigation } from "@/components/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -55,11 +55,11 @@ export default function Learn2Page() {
   const [showResult, setShowResult] = useState(false)
   const [quizComplete, setQuizComplete] = useState(false)
 
-  if (!user) {
-    router.push("/auth")
-    return null
-  }
-
+  useEffect(() => {
+    if (!user) router.push("/auth");
+  }, [user, router]);
+  
+  if (!user) return null;
   const handleNext = () => {
     if (selectedAnswer === null) return
 
